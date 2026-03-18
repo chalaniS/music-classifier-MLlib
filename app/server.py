@@ -1,78 +1,84 @@
-from flask import Flask, request, render_template, jsonify  # FIXED: removed 'app' from imports
+import os
+import sys
+
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+os.environ["HADOOP_HOME"] = "C:/hadoop"
+os.environ["PATH"] += os.pathsep + "C:/hadoop/bin"
+
+from flask import Flask, request, jsonify, render_template
 from pyspark.sql import SparkSession
 from pyspark.ml import PipelineModel
-import os
 
-# -----------------------------
-# 0. Environment
-# -----------------------------
-os.environ["HADOOP_HOME"] = "C:\\hadoop"
-os.environ["PATH"] = os.environ["PATH"] + ";C:\\hadoop\\bin"
 
-# -----------------------------
-# 1. Create Flask app  ← THIS WAS MISSING
-# -----------------------------
-app = Flask(__name__)
+# ── Make sure we can import from project root ──────────────────────────────────
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE)
 
-# -----------------------------
-# 2. Start Spark
-# -----------------------------
+from flask import Flask, request, jsonify, render_template
+from pyspark.sql import SparkSession
+from pyspark.ml import PipelineModel
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+MODEL_PATH  = os.path.join(BASE, "model")
+LABELS_PATH = os.path.join(MODEL_PATH, "labels.txt")
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+STATIC_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
+
+# ── Spark + model (loaded once at startup) ────────────────────────────────────
+print("\n🔥  Starting Spark …")
 spark = SparkSession.builder \
-    .appName("MusicClassifierWebApp") \
-    .config("spark.hadoop.io.nativeio.enabled", "false") \
+    .appName("MusicClassifier-Server") \
+    .config("spark.driver.memory", "2g") \
     .getOrCreate()
-
 spark.sparkContext.setLogLevel("ERROR")
 
-# -----------------------------
-# 3. Load model
-# -----------------------------
-MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "model", "music_model"))
-print(f"Loading model from: {MODEL_PATH}")
+print(f"📦  Loading model from: {MODEL_PATH}")
 model = PipelineModel.load(MODEL_PATH)
 
-# Get genre labels from StringIndexer (stage 0)
-labels = model.stages[0].labels
-print(f"Loaded genres: {labels}")
+# Load label mapping (index → genre name)
+with open(LABELS_PATH) as f:
+    labels = [line.strip() for line in f.readlines()]
 
-# -----------------------------
-# 4. Routes
-# -----------------------------
-@app.route("/", methods=["GET"])
-def home():
+print(f"🏷️   Labels loaded: {labels}")
+print("🌐  Server ready!\n")
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+@app.route("/")
+def index():
     return render_template("index.html")
 
-@app.route("/classify", methods=["POST"])
-def classify():
-    try:
-        lyrics = request.form.get("lyrics", "").strip()
 
-        if not lyrics:
-            return jsonify({"error": "No lyrics provided"}), 400
+@app.route("/predict", methods=["POST"])
+def predict():
+    data   = request.get_json(force=True)
+    lyrics = data.get("lyrics", "").strip()
 
-        # Create DataFrame with only lyrics column
-        df = spark.createDataFrame([(lyrics,)], ["lyrics"])
-        result = model.transform(df)
-        row = result.select("prediction", "probability").collect()[0]
+    if not lyrics:
+        return jsonify({"error": "No lyrics provided"}), 400
 
-        prediction_index = int(row["prediction"])
-        predicted_genre = labels[prediction_index]
+    # Build a one-row dataframe
+    df     = spark.createDataFrame([(lyrics,)], ["lyrics"])
+    result = model.transform(df)
 
-        probs = list(row["probability"])
-        prob_dict = {labels[i]: round(probs[i] * 100, 2) for i in range(len(labels))}
-        prob_dict = dict(sorted(prob_dict.items(), key=lambda x: x[1], reverse=True))
+    # probability vector is ordered by StringIndexer label indices
+    prob_vector = result.select("probability").first()[0].toArray().tolist()
 
-        return jsonify({
-            "predicted_genre": predicted_genre,
-            "probabilities": prob_dict
-        })
+    # Map index → genre name
+    genre_probs = {labels[i]: round(prob_vector[i] * 100, 2)
+                   for i in range(len(labels))}
 
-    except Exception as e:
-        print(f"ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+    # Top prediction
+    top_genre = max(genre_probs, key=genre_probs.get)
 
-# -----------------------------
-# 5. Run
-# -----------------------------
+    return jsonify({
+        "top_genre"   : top_genre,
+        "probabilities": genre_probs
+    })
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=False, port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=False)

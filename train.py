@@ -1,118 +1,81 @@
-import os
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import Tokenizer, HashingTF, IDF, StringIndexer, StopWordsRemover
-from pyspark.ml.classification import LogisticRegression
 from pyspark.ml import Pipeline
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import (
+    Tokenizer, StopWordsRemover, HashingTF, IDF, StringIndexer
+)
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 
-# -----------------------------
-# 0. Set HADOOP_HOME for Windows
-# -----------------------------
-os.environ["HADOOP_HOME"] = "C:\\hadoop"  # Fixed: should point to hadoop root, not bin
+import os
+os.environ["HADOOP_HOME"] = "C:/hadoop"
+os.environ["PATH"] += ";C:/hadoop/bin"
 
-# -----------------------------
-# 1. Start Spark
-# -----------------------------
+# ── Spark session ──────────────────────────────────────────────────────────────
 spark = SparkSession.builder \
-    .appName("MusicClassifier") \
-    .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
+    .appName("MusicClassifier-Train") \
+    .config("spark.driver.memory", "4g") \
     .getOrCreate()
 
-spark.sparkContext.setLogLevel("ERROR")  # Suppress warnings in output
+spark.sparkContext.setLogLevel("ERROR")
 
-# -----------------------------
-# 2. Load dataset - FIXED: multiLine + escape for lyrics with newlines
-# -----------------------------
+# ── Load data ──────────────────────────────────────────────────────────────────
+DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "Merged_dataset.csv")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
+
+print(f"\n📂  Loading data from: {DATA_PATH}")
+
 df = spark.read \
     .option("header", "true") \
+    .option("inferSchema", "true") \
     .option("multiLine", "true") \
     .option("escape", '"') \
-    .option("encoding", "UTF-8") \
-    .csv("data/Mendeley_dataset.csv")
+    .csv(DATA_PATH) \
+    .select("lyrics", "genre") \
+    .na.drop()
 
-# -----------------------------
-# 3. Debug: print columns to verify
-# -----------------------------
-print("Columns found:", df.columns)
-print(f"Total rows loaded: {df.count()}")
-
-# -----------------------------
-# 4. Select and clean needed columns
-# -----------------------------
-df = df.select("lyrics", "genre")
-df = df.dropna(subset=["lyrics", "genre"])
-
-print(f"Rows after dropping nulls: {df.count()}")
-print("Genre distribution:")
+print(f"✅  Loaded {df.count()} rows")
+print("🎵  Genre distribution:")
 df.groupBy("genre").count().orderBy("count", ascending=False).show()
 
-# -----------------------------
-# 5. Convert genre -> numeric label
-# -----------------------------
-indexer = StringIndexer(inputCol="genre", outputCol="label", handleInvalid="skip")
+# ── Pipeline stages ────────────────────────────────────────────────────────────
+labelIndexer = StringIndexer(inputCol="genre", outputCol="label", handleInvalid="keep")
+tokenizer    = Tokenizer(inputCol="lyrics", outputCol="words")
+remover      = StopWordsRemover(inputCol="words", outputCol="filtered")
+hashTF       = HashingTF(inputCol="filtered", outputCol="rawFeatures", numFeatures=20000)
+idf          = IDF(inputCol="rawFeatures", outputCol="features", minDocFreq=2)
+lr           = LogisticRegression(maxIter=100, regParam=0.01, elasticNetParam=0.0)
 
-# -----------------------------
-# 6. Text processing pipeline
-# -----------------------------
-tokenizer = Tokenizer(inputCol="lyrics", outputCol="words")
+pipeline = Pipeline(stages=[labelIndexer, tokenizer, remover, hashTF, idf, lr])
 
-# ADDED: StopWordsRemover improves accuracy
-remover = StopWordsRemover(inputCol="words", outputCol="filtered")
+# ── Train / test split ─────────────────────────────────────────────────────────
+train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+print(f"\n🔀  Train: {train_df.count()}  |  Test: {test_df.count()}")
 
-tf = HashingTF(inputCol="filtered", outputCol="rawFeatures", numFeatures=10000)
-idf = IDF(inputCol="rawFeatures", outputCol="features", minDocFreq=2)
+# ── Train ──────────────────────────────────────────────────────────────────────
+print("\n🚀  Training model …")
+model = pipeline.fit(train_df)
 
-# -----------------------------
-# 7. Classifier
-# -----------------------------
-lr = LogisticRegression(
-    featuresCol="features",
-    labelCol="label",
-    maxIter=20,          # Increased from 10 for better accuracy
-    regParam=0.01        # Regularization to prevent overfitting
-)
-
-# -----------------------------
-# 8. Build Pipeline
-# -----------------------------
-pipeline = Pipeline(stages=[indexer, tokenizer, remover, tf, idf, lr])
-
-# -----------------------------
-# 9. Train/Test split (80/20)
-# -----------------------------
-train, test = df.randomSplit([0.8, 0.2], seed=42)
-print(f"Training rows: {train.count()}, Test rows: {test.count()}")
-
-# -----------------------------
-# 10. Train model
-# -----------------------------
-print("Training model... please wait...")
-model = pipeline.fit(train)
-
-# -----------------------------
-# 11. Evaluate
-# -----------------------------
-predictions = model.transform(test)
-
-evaluator = MulticlassClassificationEvaluator(
-    labelCol="label",
-    predictionCol="prediction",
-    metricName="accuracy"
+# ── Evaluate ───────────────────────────────────────────────────────────────────
+predictions = model.transform(test_df)
+evaluator   = MulticlassClassificationEvaluator(
+    labelCol="label", predictionCol="prediction", metricName="accuracy"
 )
 accuracy = evaluator.evaluate(predictions)
-print(f"\n✅ Model Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+print(f"✅  Test Accuracy: {accuracy * 100:.2f}%")
 
-# Also show per-genre breakdown
-print("\nSample predictions:")
-predictions.select("lyrics", "genre", "prediction").show(5, truncate=50)
+# ── Save model ─────────────────────────────────────────────────────────────────
+if os.path.exists(MODEL_PATH):
+    import shutil
+    shutil.rmtree(MODEL_PATH)
 
-# -----------------------------
-# 12. Save model
-# -----------------------------
-model.write().overwrite().save("model/music_model")
-print("✅ Model trained and saved to model/music_model")
+model.save(MODEL_PATH)
+print(f"💾  Model saved to: {MODEL_PATH}")
 
-# -----------------------------
-# 13. Stop Spark
-# -----------------------------
+# Save label-to-genre mapping so the server can decode predictions
+labels = model.stages[0].labels          # StringIndexer labels in index order
+with open(os.path.join(os.path.dirname(__file__), "model", "labels.txt"), "w") as f:
+    f.write("\n".join(labels))
+
+print(f"🏷️   Labels saved: {list(labels)}")
 spark.stop()
+print("\n🎉  Training complete!\n")
