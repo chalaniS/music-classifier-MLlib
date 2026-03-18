@@ -1,6 +1,5 @@
 @echo off
-
-echo Starting Spark App...
-
-cd app
-python app.py
+cd /d %~dp0
+start python app\server.py
+timeout /t 3 /nobreak >nul
+start http://localhost:5000

@@ -1,12 +1,252 @@
-<form method="post">
-    <textarea name="lyrics" rows="10" cols="50"></textarea><br>
-    <button type="submit">Predict</button>
-</form>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Music Genre Classifier</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-{% if prediction %}
-    <h2>Predicted Genre: {{ prediction }}</h2>
-{% endif %}
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
 
-{% if chart %}
-    <img src="{{ chart }}" width="500">
-{% endif %}
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 8px;
+      color: #a78bfa;
+    }
+
+    p.subtitle {
+      color: #888;
+      margin-bottom: 30px;
+    }
+
+    .card {
+      background: #1a1a2e;
+      border-radius: 16px;
+      padding: 30px;
+      width: 100%;
+      max-width: 700px;
+      box-shadow: 0 4px 30px rgba(167,139,250,0.15);
+    }
+
+    textarea {
+      width: 100%;
+      height: 160px;
+      background: #0f0f1a;
+      border: 1px solid #333;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 0.95rem;
+      padding: 14px;
+      resize: vertical;
+      outline: none;
+      transition: border 0.2s;
+    }
+
+    textarea:focus { border-color: #a78bfa; }
+
+    button {
+      margin-top: 16px;
+      width: 100%;
+      padding: 14px;
+      background: #7c3aed;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: #6d28d9; }
+    button:disabled { background: #444; cursor: not-allowed; }
+
+    #result {
+      margin-top: 30px;
+      display: none;
+    }
+
+    #predicted-label {
+      text-align: center;
+      font-size: 1.4rem;
+      margin-bottom: 20px;
+      color: #a78bfa;
+    }
+
+    #predicted-label span {
+      font-size: 2rem;
+      font-weight: bold;
+      color: #fff;
+      display: block;
+      margin-top: 6px;
+    }
+
+    #chart-container {
+      position: relative;
+      height: 300px;
+    }
+
+    #error-msg {
+      color: #f87171;
+      margin-top: 14px;
+      text-align: center;
+      display: none;
+    }
+
+    .loading {
+      text-align: center;
+      margin-top: 16px;
+      color: #a78bfa;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎵 Music Genre Classifier</h1>
+  <p class="subtitle">Paste song lyrics below and discover the genre</p>
+
+  <div class="card">
+    <textarea id="lyrics-input" placeholder="Paste song lyrics here..."></textarea>
+    <button id="classify-btn" onclick="classify()">🎧 Classify Genre</button>
+    <div class="loading" id="loading">⏳ Analysing lyrics...</div>
+    <div id="error-msg"></div>
+
+    <div id="result">
+      <div id="predicted-label">
+        Predicted Genre: <span id="genre-name">-</span>
+      </div>
+      <div id="chart-container">
+        <canvas id="genreChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let chartInstance = null;
+
+    async function classify() {
+      const lyrics = document.getElementById("lyrics-input").value.trim();
+      const btn = document.getElementById("classify-btn");
+      const loading = document.getElementById("loading");
+      const errorMsg = document.getElementById("error-msg");
+      const result = document.getElementById("result");
+
+      if (!lyrics) {
+        showError("Please paste some lyrics first!");
+        return;
+      }
+
+      // UI state
+      btn.disabled = true;
+      loading.style.display = "block";
+      errorMsg.style.display = "none";
+      result.style.display = "none";
+
+      try {
+        const formData = new FormData();
+        formData.append("lyrics", lyrics);
+
+        const response = await fetch("/classify", {
+          method: "POST",
+          body: formData
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+          showError("Error: " + data.error);
+          return;
+        }
+
+        // Show predicted genre
+        document.getElementById("genre-name").textContent =
+          data.predicted_genre.toUpperCase();
+
+        // Draw chart
+        drawChart(data.probabilities);
+
+        result.style.display = "block";
+
+      } catch (err) {
+        showError("Something went wrong. Is the server running?");
+      } finally {
+        btn.disabled = false;
+        loading.style.display = "none";
+      }
+    }
+
+    function drawChart(probabilities) {
+      const labels = Object.keys(probabilities);
+      const values = Object.values(probabilities);
+
+      // Color bars - highlight the highest one
+      const maxVal = Math.max(...values);
+      const colors = values.map(v =>
+        v === maxVal ? "#7c3aed" : "#4c1d95"
+      );
+
+      if (chartInstance) chartInstance.destroy();
+
+      const ctx = document.getElementById("genreChart").getContext("2d");
+      chartInstance = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: "Probability (%)",
+            data: values,
+            backgroundColor: colors,
+            borderRadius: 8,
+            borderSkipped: false
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => ` ${ctx.parsed.y.toFixed(2)}%`
+              }
+            }
+          },
+          scales: {
+            x: {
+              ticks: { color: "#ccc" },
+              grid: { color: "#222" }
+            },
+            y: {
+              beginAtZero: true,
+              max: 100,
+              ticks: {
+                color: "#ccc",
+                callback: val => val + "%"
+              },
+              grid: { color: "#222" }
+            }
+          }
+        }
+      });
+    }
+
+    function showError(msg) {
+      const errorMsg = document.getElementById("error-msg");
+      errorMsg.textContent = msg;
+      errorMsg.style.display = "block";
+    }
+  </script>
+
+</body>
+</html>
