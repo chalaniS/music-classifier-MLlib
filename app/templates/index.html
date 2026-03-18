@@ -1,0 +1,12 @@
+<form method="post">
+    <textarea name="lyrics" rows="10" cols="50"></textarea><br>
+    <button type="submit">Predict</button>
+</form>
+
+{% if prediction %}
+    <h2>Predicted Genre: {{ prediction }}</h2>
+{% endif %}
+
+{% if chart %}
+    <img src="{{ chart }}" width="500">
+{% endif %}
