@@ -1,6 +1,8 @@
 # 🎵 Music Genre Classifier
 
 A web-based music genre classification system built with **Apache Spark MLlib** and **Flask**. Classifies song lyrics into 8 genres using a TF-IDF + Logistic Regression pipeline.
+----
+<img width="1920" height="1080" alt="UI" src="https://github.com/user-attachments/assets/332f2a6d-08a8-431b-acb3-1eac045b16a6" />
 
 ---
 
@@ -154,8 +156,4 @@ artist_name, track_name, release_date, genre, lyrics
 
 ---
 
-## 📝 Assignment Info
 
-- **Course**: CS5229
-- **Task**: MLlib and Visualisation Homework
-- **Due**: Thursday, 19 March 2026, 11:59 PM
